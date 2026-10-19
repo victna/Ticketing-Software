@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ticketing</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1b1f2a; }
+  h1 { margin-bottom: 4px; }
+  h2 { margin: 0 0 8px; font-size: 18px; }
+  section { border: 1px solid #d5d9e2; border-radius: 10px; padding: 14px; margin: 14px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+  input, select, button { font-size: 16px; padding: 8px 10px; border-radius: 6px; border: 1px solid #aab1c2; }
+  input { flex: 1 1 160px; }
+  button { background: #1a3a8a; color: #fff; border-color: #1a3a8a; cursor: pointer; }
+  #result { border-radius: 10px; padding: 12px; margin-top: 14px; background: #f3f5fa; white-space: pre-wrap;
+            font-family: ui-monospace, Consolas, monospace; font-size: 14px; overflow-x: auto; }
+  #result.good { background: #e7f6ec; }
+  #result.bad { background: #fdeaea; }
+  .headline { font-weight: bold; font-size: 16px; margin-bottom: 6px; font-family: system-ui, sans-serif; }
+  .hint { color: #5a6275; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>Ticketing</h1>
+<p class="hint">Tickets are single-use. Season passes are reusable and have a photo.</p>
+
+<section>
+  <h2>Create a ticket</h2>
+  <div class="row">
+    <input id="tEvent" placeholder="Event name">
+    <input id="tName" placeholder="Ticket holder name">
+    <input id="tYear" type="number" placeholder="Year (blank = this year)">
+  </div>
+  <button onclick="createTicket()">Create ticket</button>
+</section>
+
+<section>
+  <h2>Scan a ticket</h2>
+  <div class="row">
+    <input id="tCode" placeholder="Scan or type a ticket code" onkeydown="if(event.key==='Enter')scanTicket()">
+    <button onclick="scanTicket()">Scan</button>
+  </div>
+</section>
+
+<section>
+  <h2>Create a season pass</h2>
+  <div class="row">
+    <select id="pType"></select>
+    <input id="pName" placeholder="Pass holder name">
+  </div>
+  <button onclick="createPass()">Create pass</button>
+</section>
+
+<section>
+  <h2>Scan a season pass at the gate</h2>
+  <div class="row">
+    <input id="gPark" placeholder="Park this scanner is at (e.g. Worlds of Fun)">
+    <input id="gCode" placeholder="Scan or type a pass code" onkeydown="if(event.key==='Enter')checkIn()">
+    <button onclick="checkIn()">Scan</button>
+  </div>
+  <div class="row">
+    <select id="gPerk">
+      <option value="fastLane">Fast lane</option>
+      <option value="freeFriendTicket">Free friend ticket</option>
+      <option value="friendDiscount">Friend discount</option>
+    </select>
+    <button onclick="usePerk()">Use perk on the code above</button>
+  </div>
+</section>
+
+<div id="result" hidden></div>
+
+<script>
+  var lanUrls = [];
+
+  function $(id) { return document.getElementById(id); }
+
+  async function call(method, url, body) {
+    var options = { method: method, headers: {} };
+    if (body !== undefined) {
+      options.headers['Content-Type'] = 'application/json';
+      options.body = JSON.stringify(body);
+    }
+    var response = await fetch(url, options);
+    return response.json();
+  }
+
+  // Shows times like "Oct 19, 2026, 12:05 AM" instead of raw timestamps
+  function prettyJson(data) {
+    return JSON.stringify(data, function (key, value) {
+      if (typeof value === 'string' && /(Date|At)$/.test(key) && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+        return new Date(value).toLocaleString();
+      }
+      return value;
+    }, 2);
+  }
+
+  function show(headline, data, good) {
+    var box = $('result');
+    box.hidden = false;
+    box.className = good ? 'good' : 'bad';
+    box.innerHTML = '';
+    var h = document.createElement('div');
+    h.className = 'headline';
+    h.textContent = headline;
+    box.appendChild(h);
+    box.appendChild(document.createTextNode(prettyJson(data)));
+    box.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function showScan(label, data) {
+    if (data.ok === true) {
+      show('VALID ' + label, data, true);
+    } else {
+      show('REJECTED: ' + (data.reason || 'Unknown problem'), data, false);
+    }
+  }
+
+  async function createTicket() {
+    var data = await call('POST', '/api/tickets', {
+      event: $('tEvent').value,
+      name: $('tName').value,
+      year: $('tYear').value ? Number($('tYear').value) : null
+    });
+    if (data.ok === false) return show('Could not create: ' + data.reason, data, false);
+    show('TICKET CREATED: ' + data.code, data, true);
+    $('tName').value = '';
+  }
+
+  async function scanTicket() {
+    var code = $('tCode').value.trim();
+    if (!code) return;
+    var data = await call('POST', '/api/tickets/' + encodeURIComponent(code) + '/redeem');
+    showScan('TICKET', data);
+    $('tCode').value = '';
+  }
+
+  async function createPass() {
+    var data = await call('POST', '/api/passes', { type: $('pType').value, name: $('pName').value });
+    if (data.ok === false) return show('Could not create: ' + data.reason, data, false);
+
+    var base = lanUrls.length ? lanUrls[0] : location.origin;
+    data.photoPage = base + '/photo/' + data.code;
+    show('PASS CREATED: ' + data.code + '\nOpen the photoPage address on the phone/tablet to take the photo.', data, true);
+    $('pName').value = '';
+  }
+
+  async function checkIn() {
+    var code = $('gCode').value.trim();
+    var park = $('gPark').value.trim();
+    if (!code) return;
+    var data = await call('POST', '/api/passes/' + encodeURIComponent(code) + '/checkin?park=' + encodeURIComponent(park));
+    if (data.pass) data.viewPhoto = (lanUrls.length ? lanUrls[0] : location.origin) + '/view/' + data.pass.code;
+    showScan('PASS', data);
+  }
+
+  async function usePerk() {
+    var code = $('gCode').value.trim();
+    if (!code) return;
+    var data = await call('POST', '/api/passes/' + encodeURIComponent(code) + '/perks/' + $('gPerk').value);
+    showScan('PERK', data);
+  }
+
+  async function init() {
+    try {
+      var types = await call('GET', '/api/passes/types');
+      $('pType').innerHTML = types.map(function (t) {
+        return '<option value="' + t.id + '">' + t.label + ' ($' + t.price + ')</option>';
+      }).join('');
+      var info = await call('GET', '/api/server-info');
+      lanUrls = info.lanUrls || [];
+    } catch (e) {
+      show('Could not reach the server', { error: String(e) }, false);
+    }
+  }
+  init();
+</script>
+</body>
+</html>
